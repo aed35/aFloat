@@ -1,20 +1,32 @@
+
 #ifndef AFLOAT_H
 #define AFLOAT_H
 
 #include <cstdint>
 #include <cmath>
 #include <limits>
+#include <type_traits>
+#include <cassert>
 
 // ----------------------------
 // Generic parametric aFloat
 // ----------------------------
 template<int SIGN_BITS, int EXP_BITS, int MANT_BITS>
 struct aFloat {
+    static_assert(SIGN_BITS <= 1, "Only 0 or 1 sign bit allowed");
+    static_assert(SIGN_BITS + EXP_BITS + MANT_BITS <= 32,
+                  "Total bits cannot exceed 32.");
+
     uint32_t sign : SIGN_BITS;
     uint32_t exp  : EXP_BITS;
     uint32_t mant : MANT_BITS;
 
     static constexpr double bias = (1 << EXP_BITS) / 2.0;
+    static constexpr int totalBits = SIGN_BITS + EXP_BITS + MANT_BITS;
+    using storage_t = typename std::conditional<
+        (totalBits <= 8), uint8_t,
+        typename std::conditional<(totalBits <= 16), uint16_t, uint32_t>::type
+    >::type;
 
     // Decode to double
     double toDouble() const {
@@ -27,8 +39,8 @@ struct aFloat {
         return value;
     }
 
-    // Quantize int -> nearest aFloat
-    static aFloat intToNearest(int target) {
+    // Quantize double -> nearest aFloat
+    static aFloat doubleToFlt(double target) {
         aFloat best{};
         double minDiff = std::numeric_limits<double>::infinity();
 
@@ -37,10 +49,14 @@ struct aFloat {
         int maxMant = 1 << MANT_BITS;
 
         for (int s = 0; s < maxSign; ++s) {
+            double t = target;
+            if constexpr (SIGN_BITS > 0) {
+                if (s == 1) t = -target; // handle negative
+            }
+
             for (int e = 0; e < maxExp; ++e) {
-                // analytical mantissa calculation to reduce search
                 double val_base = std::pow(2.0, e - bias);
-                double ideal_m = static_cast<double>(target) / val_base;
+                double ideal_m = t / val_base;
                 int m_quant = static_cast<int>(std::round((ideal_m - 1.0) * maxMant));
                 if (m_quant < 0) m_quant = 0;
                 if (m_quant >= maxMant) m_quant = maxMant - 1;
@@ -61,6 +77,33 @@ struct aFloat {
         }
 
         return best;
+    }
+
+    // Quantize float -> nearest aFloat
+    static aFloat floatToFlt(float target) {
+        return doubleToFlt(static_cast<double>(target));
+    }
+
+    // Pack into minimal bytes
+    storage_t pack() const {
+        storage_t result = 0;
+        result |= mant;
+        result |= exp << MANT_BITS;
+        if constexpr (SIGN_BITS > 0) {
+            result |= sign << (MANT_BITS + EXP_BITS);
+        }
+        return result;
+    }
+
+    // Unpack from minimal bytes
+    static aFloat unpack(storage_t data) {
+        aFloat res{};
+        res.mant = data & ((1 << MANT_BITS) - 1);
+        res.exp  = (data >> MANT_BITS) & ((1 << EXP_BITS) - 1);
+        if constexpr (SIGN_BITS > 0) {
+            res.sign = (data >> (MANT_BITS + EXP_BITS)) & 1;
+        }
+        return res;
     }
 };
 
